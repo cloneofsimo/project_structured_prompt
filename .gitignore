@@ -1,0 +1,11 @@
+*.bin
+*.pkl
+GRIT/
+grit_files
+grit_mds_test
+grit_mds_train
+JourneyDB/
+*.safetensors
+*.mds
+*.csv
+*.parquet
