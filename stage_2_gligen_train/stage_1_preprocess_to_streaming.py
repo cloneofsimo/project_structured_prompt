@@ -98,14 +98,17 @@ class ImageDataset(Dataset):
             for file in files:
                 if file.endswith('.json'):
                     json_path = os.path.join(subdir, file)
-                    with open(json_path, 'r') as f:
-                        metadata = json.load(f)
+                    try:
+                        with open(json_path, 'r') as f:
+                            metadata = json.load(f)
+                    except:
+                        print(f"Error reading {json_path}")
+                        continue
+
                     self.metadatas.append(metadata)
                     # modify the file to be jpg
                     file_jpg = json_path.replace('.json', '.jpg')
-                    
 
-              
                     self.image_paths.append(file_jpg)
 
         # cut down the dataset for testing 
@@ -191,22 +194,36 @@ def convert_to_mds(root_dir, out_root, device, batch_size=8, num_workers=4, is_t
 
         logging.info(f"Average Inference Latency on {device}: {np.mean(inference_latencies)} seconds")
 
-def main(root_dir, out_root, batch_size=32, num_workers=8, is_test = False):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    convert_to_mds(root_dir, out_root, device, batch_size, num_workers, is_test = is_test)
+def main(root_dir, out_root, batch_size=32, num_workers=8, is_test=False, device_name='cuda'):
+    device = torch.device(device_name if torch.cuda.is_available() else "cpu")
+    print(f"Processing on {device}")
+    convert_to_mds(root_dir, out_root, device, batch_size, num_workers, is_test=is_test)
     logging.info("Finished processing images.")
 
-if __name__ == "__main__":
-    # Example usage
-    i = 70
-    root_dir = f'/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/{str(i).zfill(5)}'
-    out_root = f"./grit_mds_test"
-                    # Set your output directory
-    main(root_dir, out_root, is_test = True)
+import argparse
 
-    for i in range(70):
-        #root_dir = '/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/00047'  # Set your dataset directory
-        root_dir = f'/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/{str(i).zfill(5)}'
-        out_root = f"./grit_mds_train/{str(i).zfill(5)}"
-                        # Set your output directory
-        main(root_dir, out_root)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Convert images to MDS format.')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for processing (cuda or cpu).')
+    parser.add_argument('--file_index', type=int, default=0, help='File index to process.')
+    parser.add_argument('--is_test', action='store_true', help='Run in test mode with reduced dataset.')
+
+    args = parser.parse_args()
+
+    root_dir = f'./grit_files/{str(args.file_index).zfill(5)}'
+    out_root = f"./grit_mds_train/{str(args.file_index).zfill(5)}"
+
+    main(root_dir, out_root, is_test=args.is_test, device_name=args.device)
+
+    # i = 55
+    # root_dir = f'/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/{str(i).zfill(5)}'
+    # out_root = f"./grit_mds_test"
+    #                 # Set your output directory
+    # main(root_dir, out_root, is_test = True)
+
+    # for i in range(55):
+    #     #root_dir = '/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/00047'  # Set your dataset directory
+    #     root_dir = f'./grit_files/{str(i).zfill(5)}'
+    #     out_root = f"./grit_mds_train/{str(i).zfill(5)}"
+    #                     # Set your output directory
+    #     main(root_dir, out_root)

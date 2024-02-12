@@ -1,0 +1,5 @@
+lightning
+diffusers
+transformers
+huggingface-hub
+img2dataset

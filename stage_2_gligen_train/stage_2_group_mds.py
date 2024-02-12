@@ -19,7 +19,7 @@ def with_id(basename: str, shard_id: int) -> str:
 
 
 def merge_shard_groups(
-    root: str = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
+    root: str = "./grit_mds_train",
 ) -> None:
     """Merge ephemeral sub-datasets created in parallel into one dataset.
 

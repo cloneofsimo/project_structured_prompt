@@ -1,1 +1,0 @@
-{"shards": [{"column_encodings": ["str", "np32"], "column_names": ["caption_output", "vae_output"], "column_sizes": [null, null], "compression": null, "format": "mds", "hashes": [], "raw_data": {"basename": "shard.00000.mds", "bytes": 14763632, "hashes": {}}, "samples": 100, "size_limit": 67108864, "version": 2, "zip_data": null}], "version": 2}

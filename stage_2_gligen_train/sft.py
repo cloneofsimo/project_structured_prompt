@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import lightning as L
-
+import re
 import fnmatch
 import json
 import math
@@ -9,6 +9,7 @@ import os
 import shutil
 from typing import List, Optional
 from streaming import StreamingDataset
+import wandb
 
 import numpy as np
 import torch
@@ -67,14 +68,13 @@ def main(
     resolution: int = 768,
     crops_coords_top_left_h: int = 0,
     crops_coords_top_left_w: int = 0,
-    train_batch_size: int = 12,
+    train_batch_size: int = 6,
     num_train_epochs: int = 600,
     max_train_steps: Optional[int] = None,
     valid_steps: int = 200,  # default to no checkpoints
     checkpoint_steps: int = 2000,
     gradient_accumulation_steps: int = 1,  # todo
-    unet_learning_rate: float = 2e-5,
-   
+    unet_learning_rate: float = 5e-6,
     scale_lr: bool = False,
     lr_scheduler: str = "constant",
     lr_warmup_steps: int = 500,
@@ -83,16 +83,13 @@ def main(
     dataloader_num_workers: int = 0,
     max_grad_norm: float = 1.0,  # todo with tests
     allow_tf32: bool = True,
-    mixed_precision: Optional[str] = "bf16",
+    mixed_precision: Optional[str] = "fp32",
     device: str = "cuda:0",
     verbose: bool = True,
-    remote_train_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
-    remote_val_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test/data"
+    remote_train_dir = "./grit_mds_train",
+    remote_val_dir = "./grit_mds_test/data"
 ) -> None:
-    import wandb
-
-    wandb.init(project="Vendor", name=output_dir.split("/")[-1])
-
+   
     if allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
     if not seed:
@@ -102,14 +99,52 @@ def main(
     latent_resolution = resolution // 8
     inserting_list_tokens = [f"<|{idx}|>" for idx in range(1000)]
 
-    weight_dtype = torch.float32
     if mixed_precision == "fp16":
         weight_dtype = torch.float16
+        fabric_precision = "16-mixed"
+
     elif mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
+        fabric_precision = "bf16-mixed"
+    else:
+        weight_dtype = torch.float32
+        fabric_precision = "32"
 
-    fabric = L.Fabric(accelerator="cuda", devices=1, precision="bf16-mixed")
+
+    fabric = L.Fabric(accelerator="cuda", devices=8, precision=fabric_precision)
     fabric.launch()
+
+    if fabric.global_rank == 0:
+        wandb.init(project="Vendor", name=output_dir.split("/")[-1],
+                   config = {
+                          "pretrained_model_name_or_path": pretrained_model_name_or_path,
+                          "output_dir": output_dir,
+                          "seed": seed,
+                          "resolution": resolution,
+                          "train_batch_size": train_batch_size,
+                          "num_train_epochs": num_train_epochs,
+                          "max_train_steps": max_train_steps,
+                          "valid_steps": valid_steps,
+                          "checkpoint_steps": checkpoint_steps,
+                          "gradient_accumulation_steps": gradient_accumulation_steps,
+                          "unet_learning_rate": unet_learning_rate,
+                          "scale_lr": scale_lr,
+                          "lr_scheduler": lr_scheduler,
+                          "lr_warmup_steps": lr_warmup_steps,
+                          "lr_num_cycles": lr_num_cycles,
+                          "lr_power": lr_power,
+                          "dataloader_num_workers": dataloader_num_workers,
+                          "max_grad_norm": max_grad_norm,
+                          "allow_tf32": allow_tf32,
+                          "mixed_precision": mixed_precision,
+                          "device": device,
+                          "verbose": verbose,
+                          "remote_train_dir": remote_train_dir,
+                          "remote_val_dir": remote_val_dir
+                     })
+                   
+
+    
 
     if scale_lr:
         unet_learning_rate = (
@@ -179,7 +214,7 @@ def main(
         },
         {
             "params": text_encoder_embedding_params,
-            "lr": unet_learning_rate * 20,  
+            "lr": unet_learning_rate * 100,  
             "weight_decay": 1e-3,  
         },
     ]
@@ -230,7 +265,7 @@ def main(
     #text_encoder_two = fabric.to_device(text_encoder_two).to(weight_dtype)
     text_encoder_one = fabric.setup(text_encoder_one)
     text_encoder_two = fabric.setup(text_encoder_two)
-    
+
     train_dataloader, val_dataloader = fabric.setup_dataloaders(
         train_dataloader, val_dataloader
     )
@@ -285,16 +320,30 @@ def main(
         "An <|98|><|269|><|303|><|545|>astronaut flying in space, 4k, high resolution.",
     ]
 
-    wandb.watch(unet.module)
-    wandb.watch(text_encoder_one)
-    wandb.watch(text_encoder_two)
+    def half_values(string):
+        # catch <|int|> and replace with <|int/2|>
+        catch = re.findall(r"<\|\d+\|>", string)
+        for c in catch:
+            val = int(c[2:-2])
+            string = string.replace(c, f"<|{val//8}|>")
+
+        return string
+
+    process_stringlist = lambda x : [half_values(i) for i in x]
+
+    valid_prompts = process_stringlist(valid_prompts)
+    
+    # if fabric.global_rank == 0:
+    #     wandb.watch(unet.module, log = 'all', log_freq = 40)
+    #     wandb.watch(text_encoder_one, log = 'all', log_freq = 40)
+    #     wandb.watch(text_encoder_two, log = 'all', log_freq = 40)
 
     for epoch in range(first_epoch, num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             progress_bar.update(1)
             progress_bar.set_description(f"# PTI :step: {global_step}, epoch: {epoch}")
 
-            sts = batch["caption_output"]
+            sts = process_stringlist(batch["caption_output"])
             vae_latent = batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution) * 0.13025
 
             # tokens to text embeds
@@ -399,12 +448,11 @@ def main(
                         text_encoder_2 = text_encoder_two.module,
                         tokenizer = tok1,
                         tokenizer_2 = tok2,
-                        torch_dtype=torch.bfloat16,
+                        torch_dtype=weight_dtype,
                         use_safetensors=True,
-                        variant="fp16",
                     ).to(fabric.device)
-                    generator = torch.Generator()
-                    generator.manual_seed(0)
+                    generator = torch.Generator().manual_seed(0)
+
                     images = pipe(
                         valid_prompts,
                         guidance_scale=5.0,
@@ -426,7 +474,9 @@ def main(
                     val_loss = 0.0
                     tot_n = 0.0
                     for step, batch in enumerate(val_dataloader):
-                        sts = batch["caption_output"]
+                        #sts = batch["caption_output"]
+                        sts = process_stringlist(batch["caption_output"])
+
                        
                         vae_latent = (
                             batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution) * 0.13025
