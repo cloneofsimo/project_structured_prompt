@@ -101,10 +101,12 @@ class ImageDataset(Dataset):
                     with open(json_path, 'r') as f:
                         metadata = json.load(f)
                     self.metadatas.append(metadata)
+                    # modify the file to be jpg
+                    file_jpg = json_path.replace('.json', '.jpg')
+                    
 
-                if file.endswith('.jpg') or file.endswith('.png'):
-                    image_path = os.path.join(subdir, file)
-                    self.image_paths.append(image_path)
+              
+                    self.image_paths.append(file_jpg)
 
         # cut down the dataset for testing 
         if is_test:
@@ -122,9 +124,9 @@ class ImageDataset(Dataset):
         metadata = self.metadatas[idx]
 
         image = Image.open(image_file).convert('RGB')
-        cropped_image = crop_to_center(image)
+        cropped_image = crop_to_center(image, new_size=768)
 
-        processed_image = prepare_image(cropped_image, w = 712, h = 712)
+        processed_image = prepare_image(cropped_image, w = 768, h = 768)
 
         caption = metadata['caption']
         noun_chunks = metadata['noun_chunks']
@@ -143,7 +145,7 @@ torch._inductor.config.coordinate_descent_check_all_directions = True
 torch.set_float32_matmul_precision('high')
 
 @torch.no_grad()
-def convert_to_mds(root_dir, out_root, device, batch_size=8, num_workers=4):
+def convert_to_mds(root_dir, out_root, device, batch_size=8, num_workers=4, is_test = False):
     logging.info(f"Processing on {device}")
 
     # Load the VAE model
@@ -155,7 +157,7 @@ def convert_to_mds(root_dir, out_root, device, batch_size=8, num_workers=4):
 
 
     # Create the dataset and dataloader
-    dataset = ImageDataset(root_dir)
+    dataset = ImageDataset(root_dir, is_test= is_test)
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
 
     sub_data_root = os.path.join(out_root, "data")
@@ -189,14 +191,20 @@ def convert_to_mds(root_dir, out_root, device, batch_size=8, num_workers=4):
 
         logging.info(f"Average Inference Latency on {device}: {np.mean(inference_latencies)} seconds")
 
-def main(root_dir, out_root, batch_size=32, num_workers=8):
+def main(root_dir, out_root, batch_size=32, num_workers=8, is_test = False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    convert_to_mds(root_dir, out_root, device, batch_size, num_workers)
+    convert_to_mds(root_dir, out_root, device, batch_size, num_workers, is_test = is_test)
     logging.info("Finished processing images.")
 
 if __name__ == "__main__":
     # Example usage
-    for i in range(71):
+    i = 70
+    root_dir = f'/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/{str(i).zfill(5)}'
+    out_root = f"./grit_mds_test"
+                    # Set your output directory
+    main(root_dir, out_root, is_test = True)
+
+    for i in range(70):
         #root_dir = '/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/00047'  # Set your dataset directory
         root_dir = f'/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_files/{str(i).zfill(5)}'
         out_root = f"./grit_mds_train/{str(i).zfill(5)}"

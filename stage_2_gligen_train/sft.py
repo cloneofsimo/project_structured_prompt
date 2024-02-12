@@ -60,7 +60,7 @@ streaming.base.util.clean_stale_shared_memory()
 def main(
     pretrained_model_name_or_path: Optional[
         str
-    ] = "stabilityai/stable-diffusion-xl-base-1.0",
+    ] = "playgroundai/playground-v2-1024px-aesthetic",
     revision: Optional[str] = None,
     output_dir: str = "./checkpoints/patch_pool",
     seed: Optional[int] = 42,
@@ -90,12 +90,12 @@ def main(
     token_dict: dict = {"TOKEN": "<s0>"},
     inserting_list_tokens: List[str] = ["<s0>", "<s1>"],
     verbose: bool = True,
-    remote_train_dir: str = "./dataset",
-    remote_val_dir: str = "./dataset_val",
+    remote_train_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
+    remote_val_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test"
 ) -> None:
     import wandb
 
-    wandb.init(project="Vendor", entity="simo", name=output_dir.split("/")[-1])
+    wandb.init(project="Vendor", name=output_dir.split("/")[-1])
 
     if allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -110,7 +110,7 @@ def main(
     elif mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
 
-    fabric = L.Fabric(accelerator="cuda", devices=8, precision="bf16-mixed")
+    fabric = L.Fabric(accelerator="cuda", devices=1, precision="bf16-mixed")
     fabric.launch()
 
     if scale_lr:
@@ -192,8 +192,7 @@ def main(
 
     # Local directory where dataset is cached during operation
 
-    local_train_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds"
-
+   
     train_dataset = StreamingDataset(
         local=local_train_dir,
         remote=remote_train_dir,
@@ -202,8 +201,6 @@ def main(
         shuffle_algo="naive",
         num_canonical_nodes=1,
     )
-
-    local_val_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test"
 
     val_dataset = StreamingDataset(
         local=local_val_dir,
@@ -393,7 +390,7 @@ def main(
                     from diffusers import DiffusionPipeline
 
                     pipe = DiffusionPipeline.from_pretrained(
-                        "stabilityai/stable-diffusion-xl-base-1.0",
+                        pretrained_model_name_or_path,
                         unet=unet.module,
                         torch_dtype=torch.bfloat16,
                         use_safetensors=True,

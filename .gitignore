@@ -9,3 +9,5 @@ JourneyDB/
 *.mds
 *.csv
 *.parquet
+__pycache__/
+wandb
