@@ -11,3 +11,4 @@ JourneyDB/
 *.parquet
 __pycache__/
 wandb
+checkpoints/

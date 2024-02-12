@@ -96,7 +96,7 @@ def load_models(
         pretrained_model_name_or_path, subfolder="vae", revision=revision
     )
     unet = UNet2DConditionModel.from_pretrained(
-        "stabilityai/stable-diffusion-xl-base-1.0",
+        pretrained_model_name_or_path,
         torch_dtype=torch.float16,
         variant="fp16",
         use_safetensors=True,
@@ -188,11 +188,15 @@ class TokenEmbeddingsHandler:
             ), "All elements in inserting_toks should be strings."
 
             self.inserting_toks = inserting_toks
-            special_tokens_dict = {"additional_special_tokens": self.inserting_toks}
-            tokenizer.add_special_tokens(special_tokens_dict)
+            for tok in self.inserting_toks:
+                special_tokens_dict = {"additional_special_tokens": [tok]}
+                tokenizer.add_special_tokens(special_tokens_dict)
+
             text_encoder.resize_token_embeddings(len(tokenizer))
 
             self.train_ids = tokenizer.convert_tokens_to_ids(self.inserting_toks)
+
+            print(f"{idx} text encoder's train_ids: {self.train_ids}")
 
             # random initialization of new tokens
 

@@ -64,19 +64,17 @@ def main(
     revision: Optional[str] = None,
     output_dir: str = "./checkpoints/patch_pool",
     seed: Optional[int] = 42,
-    resolution: int = 512,
+    resolution: int = 768,
     crops_coords_top_left_h: int = 0,
     crops_coords_top_left_w: int = 0,
-    train_batch_size: int = 8,
-    do_cache: bool = True,
+    train_batch_size: int = 12,
     num_train_epochs: int = 600,
     max_train_steps: Optional[int] = None,
     valid_steps: int = 200,  # default to no checkpoints
     checkpoint_steps: int = 2000,
     gradient_accumulation_steps: int = 1,  # todo
-    unet_learning_rate: float = 4e-5,
-    ti_lr: float = 3e-4,
-    pivot_halfway: bool = True,
+    unet_learning_rate: float = 2e-5,
+   
     scale_lr: bool = False,
     lr_scheduler: str = "constant",
     lr_warmup_steps: int = 500,
@@ -87,11 +85,9 @@ def main(
     allow_tf32: bool = True,
     mixed_precision: Optional[str] = "bf16",
     device: str = "cuda:0",
-    token_dict: dict = {"TOKEN": "<s0>"},
-    inserting_list_tokens: List[str] = ["<s0>", "<s1>"],
     verbose: bool = True,
     remote_train_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
-    remote_val_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test"
+    remote_val_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test/data"
 ) -> None:
     import wandb
 
@@ -103,6 +99,8 @@ def main(
         seed = np.random.randint(0, 2**32 - 1)
     print("Using seed", seed)
     torch.manual_seed(seed)
+    latent_resolution = resolution // 8
+    inserting_list_tokens = [f"<|{idx}|>" for idx in range(1000)]
 
     weight_dtype = torch.float32
     if mixed_precision == "fp16":
@@ -136,33 +134,21 @@ def main(
         [text_encoder_one, text_encoder_two], [tok1, tok2]
     )
     embedding_handler.initialize_new_tokens(inserting_toks=inserting_list_tokens)
-
     text_encoders = [text_encoder_one, text_encoder_two]
 
-    unet_param_to_optimize = []
-    # fine tune only attn weights
-
-    text_encoder_parameters = []
-    for text_encoder in text_encoders:
-        for name, param in text_encoder.named_parameters():
-            if "token_embedding" in name:
-                param.requires_grad = True
-                print(name)
-                text_encoder_parameters.append(param)
-            else:
-                param.requires_grad = False
-
+    # Define patterns to identify parameters of interest in the UNet model
     WHITELIST_PATTERNS = [
         "*.attn*.weight",
-        #"*.temporal*",
-    ]  # TODO : make this a parameter
+        "*.resnet*.weight",  # Added pattern to include ResNet layers
+    ]
     BLACKLIST_PATTERNS = ["*time*"]
 
+    unet_param_to_optimize = []
     unet_param_to_optimize_names = []
     for name, param in unet.named_parameters():
-        if any(
-            fnmatch.fnmatch(name, pattern) for pattern in WHITELIST_PATTERNS
-        ) and not any(fnmatch.fnmatch(name, pattern) for pattern in BLACKLIST_PATTERNS):
+        if any(fnmatch.fnmatch(name, pattern) for pattern in WHITELIST_PATTERNS) and not any(
+            fnmatch.fnmatch(name, pattern) for pattern in BLACKLIST_PATTERNS
+        ):
             param.requires_grad_(True)
             unet_param_to_optimize_names.append(name)
             unet_param_to_optimize.append(param)
@@ -170,22 +156,37 @@ def main(
         else:
             param.requires_grad_(False)
 
-    # Optimizer creation
+    # Separate text encoder parameters into embedding and others
+    text_encoder_embedding_params = []
+    text_encoder_other_params = []
+    for text_encoder in text_encoders:
+        for name, param in text_encoder.named_parameters():
+            param.requires_grad = True
+            if "token_embedding" in name:
+                text_encoder_embedding_params.append(param)
+            else:
+                text_encoder_other_params.append(param)
+
+    # Optimizer creation with different learning rates for different parameter groups
     params_to_optimize = [
         {
             "params": unet_param_to_optimize,
-            "lr": unet_learning_rate,
+            "lr": unet_learning_rate, 
         },
         {
-            "params": text_encoder_parameters,
-            "lr": ti_lr,
-            "weight_decay": 1e-3,
+            "params": text_encoder_other_params,
+            "lr": unet_learning_rate * 0.3,  
+        },
+        {
+            "params": text_encoder_embedding_params,
+            "lr": unet_learning_rate * 20,  
+            "weight_decay": 1e-3,  
         },
     ]
 
     optimizer = torch.optim.AdamW(
         params_to_optimize,
-        weight_decay=1e-4,
+        weight_decay=1e-3,
     )
 
     # Remote directory (S3 or local filesystem) where dataset is stored
@@ -225,9 +226,11 @@ def main(
     )
 
     unet, optimizer = fabric.setup(unet, optimizer)
-    text_encoder_one = fabric.to_device(text_encoder_one).to(weight_dtype)
-    text_encoder_two = fabric.to_device(text_encoder_two).to(weight_dtype)
-
+    #text_encoder_one = fabric.to_device(text_encoder_one).to(weight_dtype)
+    #text_encoder_two = fabric.to_device(text_encoder_two).to(weight_dtype)
+    text_encoder_one = fabric.setup(text_encoder_one)
+    text_encoder_two = fabric.setup(text_encoder_two)
+    
     train_dataloader, val_dataloader = fabric.setup_dataloaders(
         train_dataloader, val_dataloader
     )
@@ -276,10 +279,10 @@ def main(
         shutil.rmtree(output_dir)
 
     valid_prompts = [
-        "epic castle landscape",
-        "A bigfoot walking in the snowstorm",
-        "A squirrel eating a burger",
-        "An astronaut flying in space, 4k, high resolution.",
+        "epic <|98|><|269|><|303|><|545|>castle landscape",
+        "<|109|><|1|><|607|><|712|>A man carries <|98|><|269|><|303|><|545|><|426|><|253|><|589|><|580|>chickens as authorities enforced total evacuation of residents living near Taal volcano in Agoncillo town, Batangas province, southern Philippines on Thursday Jan. 16, 2020. Taal volcano belched smaller plumes of ash Thursday but shuddered continuously with earthquakes and cracked roads in nearby towns, which were blockaded by police due to fears of a bigger eruption. (AP Photo/Aaron Favila",
+        "<|98|><|269|><|303|><|545|>A squirrel eating a burger",
+        "An <|98|><|269|><|303|><|545|>astronaut flying in space, 4k, high resolution.",
     ]
 
     wandb.watch(unet.module)
@@ -292,7 +295,7 @@ def main(
             progress_bar.set_description(f"# PTI :step: {global_step}, epoch: {epoch}")
 
             sts = batch["caption_output"]
-            vae_latent = batch["vae_output"].reshape(-1, 4, 80, 80) * 0.13025
+            vae_latent = batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution) * 0.13025
 
             # tokens to text embeds
             prompt_embeds_list = []
@@ -371,11 +374,11 @@ def main(
             for idx, text_encoder in enumerate(text_encoders):
                 embedding_handler.retract_embeddings()
 
-            if global_step % valid_steps == 0:
+            if global_step % valid_steps == 10:
                 
 
                 if fabric.global_rank == 0:
-                    if global_step % checkpoint_steps == 0 and global_step > 0:
+                    if global_step % checkpoint_steps == 10 and global_step > 0:
                         os.makedirs(f"{output_dir}/{global_step}", exist_ok=True)
                         unet_path = f"{output_dir}/{global_step}/unet.pth"
                         text_encoder_one_path = f"{output_dir}/{global_step}/text_encoder_one.pth"
@@ -387,28 +390,34 @@ def main(
                         save_file(text_encoder_two.state_dict(), text_encoder_two_path)
 
                         
-                    from diffusers import DiffusionPipeline
+                    from diffusers import StableDiffusionXLPipeline
 
-                    pipe = DiffusionPipeline.from_pretrained(
+                    pipe = StableDiffusionXLPipeline.from_pretrained(
                         pretrained_model_name_or_path,
                         unet=unet.module,
+                        text_encoder = text_encoder_one.module,
+                        text_encoder_2 = text_encoder_two.module,
+                        tokenizer = tok1,
+                        tokenizer_2 = tok2,
                         torch_dtype=torch.bfloat16,
                         use_safetensors=True,
                         variant="fp16",
                     ).to(fabric.device)
                     generator = torch.Generator()
-                    generator.manual_seed(step)
+                    generator.manual_seed(0)
                     images = pipe(
                         valid_prompts,
                         guidance_scale=5.0,
                         generator=generator,
-                        width=640,
-                        height=640,
+                        width=resolution,
+                        height=resolution,
                     ).images
                     log_images = []
                     for img, promp in zip(images, valid_prompts):
                         _img = wandb.Image(img, caption=promp)
-                        wandb.log({"images": _img})
+                        log_images.append(_img)
+
+                    wandb.log({"images": log_images})
 
                     del pipe
 
@@ -420,7 +429,7 @@ def main(
                         sts = batch["caption_output"]
                        
                         vae_latent = (
-                            batch["vae_output"].reshape(-1, 4, 80, 80) * 0.13025
+                            batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution) * 0.13025
                         )
 
                         # tokens to text embeds
