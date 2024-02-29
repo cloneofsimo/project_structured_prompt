@@ -161,9 +161,9 @@ def unet_attn_processors_state_dict(unet) -> Dict[str, torch.tensor]:
 
     for attn_processor_key, attn_processor in attn_processors.items():
         for parameter_key, parameter in attn_processor.state_dict().items():
-            attn_processors_state_dict[
-                f"{attn_processor_key}.{parameter_key}"
-            ] = parameter
+            attn_processors_state_dict[f"{attn_processor_key}.{parameter_key}"] = (
+                parameter
+            )
 
     return attn_processors_state_dict
 
@@ -216,9 +216,9 @@ class TokenEmbeddingsHandler:
                 .to(dtype=self.dtype)
                 * std_token_embedding
             )
-            self.embeddings_settings[
-                f"original_embeddings_{idx}"
-            ] = text_encoder.text_model.embeddings.token_embedding.weight.data.clone()
+            self.embeddings_settings[f"original_embeddings_{idx}"] = (
+                text_encoder.text_model.embeddings.token_embedding.weight.data.clone()
+            )
             self.embeddings_settings[f"std_token_embedding_{idx}"] = std_token_embedding
 
             inu = torch.ones((len(tokenizer),), dtype=torch.bool)

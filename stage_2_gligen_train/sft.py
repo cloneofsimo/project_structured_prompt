@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import lightning as L
-
+import re
 import fnmatch
 import json
 import math
@@ -61,7 +61,7 @@ streaming.base.util.clean_stale_shared_memory()
 def main(
     pretrained_model_name_or_path: Optional[
         str
-    ] = "playgroundai/playground-v2-1024px-aesthetic",
+    ] = "stabilityai/stable-diffusion-xl-base-1.0",
     revision: Optional[str] = None,
     output_dir: str = "./checkpoints/patch_pool",
     seed: Optional[int] = 42,
@@ -73,8 +73,8 @@ def main(
     max_train_steps: Optional[int] = None,
     valid_steps: int = 200,  # default to no checkpoints
     checkpoint_steps: int = 2000,
-    gradient_accumulation_steps: int = 1,  # todo
-    unet_learning_rate: float = 2e-5,
+    gradient_accumulation_steps: int = 32,  # todo
+    unet_learning_rate: float = 3e-5,
     scale_lr: bool = False,
     lr_scheduler: str = "constant",
     lr_warmup_steps: int = 500,
@@ -86,10 +86,10 @@ def main(
     mixed_precision: Optional[str] = "fp32",
     device: str = "cuda:0",
     verbose: bool = True,
-    remote_train_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
-    remote_val_dir = "/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test/data"
+    remote_train_dir="/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
+    remote_val_dir="/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test/data",
 ) -> None:
-   
+
     if allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
     if not seed:
@@ -110,41 +110,42 @@ def main(
         weight_dtype = torch.float32
         fabric_precision = "32"
 
-
     fabric = L.Fabric(accelerator="cuda", devices=1, precision=fabric_precision)
     fabric.launch()
 
-    if fabric.global_rank == 0:
-        wandb.init(project="Vendor", name=output_dir.split("/")[-1],
-                   config = {
-                          "pretrained_model_name_or_path": pretrained_model_name_or_path,
-                          "output_dir": output_dir,
-                          "seed": seed,
-                          "resolution": resolution,
-                          "train_batch_size": train_batch_size,
-                          "num_train_epochs": num_train_epochs,
-                          "max_train_steps": max_train_steps,
-                          "valid_steps": valid_steps,
-                          "checkpoint_steps": checkpoint_steps,
-                          "gradient_accumulation_steps": gradient_accumulation_steps,
-                          "unet_learning_rate": unet_learning_rate,
-                          "scale_lr": scale_lr,
-                          "lr_scheduler": lr_scheduler,
-                          "lr_warmup_steps": lr_warmup_steps,
-                          "lr_num_cycles": lr_num_cycles,
-                          "lr_power": lr_power,
-                          "dataloader_num_workers": dataloader_num_workers,
-                          "max_grad_norm": max_grad_norm,
-                          "allow_tf32": allow_tf32,
-                          "mixed_precision": mixed_precision,
-                          "device": device,
-                          "verbose": verbose,
-                          "remote_train_dir": remote_train_dir,
-                          "remote_val_dir": remote_val_dir
-                     })
-                   
+    global_loss = 0
 
-    
+    if fabric.global_rank == 0:
+        wandb.init(
+            project="Vendor",
+            name=output_dir.split("/")[-1],
+            config={
+                "pretrained_model_name_or_path": pretrained_model_name_or_path,
+                "output_dir": output_dir,
+                "seed": seed,
+                "resolution": resolution,
+                "train_batch_size": train_batch_size,
+                "num_train_epochs": num_train_epochs,
+                "max_train_steps": max_train_steps,
+                "valid_steps": valid_steps,
+                "checkpoint_steps": checkpoint_steps,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "unet_learning_rate": unet_learning_rate,
+                "scale_lr": scale_lr,
+                "lr_scheduler": lr_scheduler,
+                "lr_warmup_steps": lr_warmup_steps,
+                "lr_num_cycles": lr_num_cycles,
+                "lr_power": lr_power,
+                "dataloader_num_workers": dataloader_num_workers,
+                "max_grad_norm": max_grad_norm,
+                "allow_tf32": allow_tf32,
+                "mixed_precision": mixed_precision,
+                "device": device,
+                "verbose": verbose,
+                "remote_train_dir": remote_train_dir,
+                "remote_val_dir": remote_val_dir,
+            },
+        )
 
     if scale_lr:
         unet_learning_rate = (
@@ -165,10 +166,6 @@ def main(
 
     # Initialize new tokens for training.
 
-    embedding_handler = TokenEmbeddingsHandler(
-        [text_encoder_one, text_encoder_two], [tok1, tok2]
-    )
-    embedding_handler.initialize_new_tokens(inserting_toks=inserting_list_tokens)
     text_encoders = [text_encoder_one, text_encoder_two]
 
     # Define patterns to identify parameters of interest in the UNet model
@@ -178,12 +175,16 @@ def main(
     ]
     BLACKLIST_PATTERNS = ["*time*"]
 
+    handler = TokenEmbeddingsHandler(text_encoders, [tok1, tok2])
+
+    handler.initialize_new_tokens(inserting_list_tokens)
+
     unet_param_to_optimize = []
     unet_param_to_optimize_names = []
     for name, param in unet.named_parameters():
-        if any(fnmatch.fnmatch(name, pattern) for pattern in WHITELIST_PATTERNS) and not any(
-            fnmatch.fnmatch(name, pattern) for pattern in BLACKLIST_PATTERNS
-        ):
+        if any(
+            fnmatch.fnmatch(name, pattern) for pattern in WHITELIST_PATTERNS
+        ) and not any(fnmatch.fnmatch(name, pattern) for pattern in BLACKLIST_PATTERNS):
             param.requires_grad_(True)
             unet_param_to_optimize_names.append(name)
             unet_param_to_optimize.append(param)
@@ -206,16 +207,16 @@ def main(
     params_to_optimize = [
         {
             "params": unet_param_to_optimize,
-            "lr": unet_learning_rate, 
+            "lr": unet_learning_rate,
         },
         {
             "params": text_encoder_other_params,
-            "lr": unet_learning_rate * 0.3,  
+            "lr": unet_learning_rate,
         },
         {
             "params": text_encoder_embedding_params,
-            "lr": unet_learning_rate * 20,  
-            "weight_decay": 1e-3,  
+            "lr": 4e-4,
+            "weight_decay": 1e-3,
         },
     ]
 
@@ -224,11 +225,6 @@ def main(
         weight_decay=1e-3,
     )
 
-    # Remote directory (S3 or local filesystem) where dataset is stored
-
-    # Local directory where dataset is cached during operation
-
-   
     train_dataset = StreamingDataset(
         local=local_train_dir,
         remote=remote_train_dir,
@@ -261,8 +257,8 @@ def main(
     )
 
     unet, optimizer = fabric.setup(unet, optimizer)
-    #text_encoder_one = fabric.to_device(text_encoder_one).to(weight_dtype)
-    #text_encoder_two = fabric.to_device(text_encoder_two).to(weight_dtype)
+    # text_encoder_one = fabric.to_device(text_encoder_one).to(weight_dtype)
+    # text_encoder_two = fabric.to_device(text_encoder_two).to(weight_dtype)
     text_encoder_one = fabric.setup(text_encoder_one)
     text_encoder_two = fabric.setup(text_encoder_two)
 
@@ -320,17 +316,35 @@ def main(
         "An <|98|><|269|><|303|><|545|>astronaut flying in space, 4k, high resolution.",
     ]
 
-    wandb.watch(unet.module)
-    wandb.watch(text_encoder_one)
-    wandb.watch(text_encoder_two)
+    def half_values(string):
+        # catch <|int|> and replace with <|int/2|>
+        catch = re.findall(r"<\|\d+\|>", string)
+        for c in catch:
+            val = int(c[2:-2])
+            string = string.replace(c, f"<|{val//8}|>")
+
+        return string
+
+    process_stringlist = lambda x: [half_values(i) for i in x]
+
+    valid_prompts = process_stringlist(valid_prompts)
+
+    # if fabric.global_rank == 0:
+    #     wandb.watch(unet.module, log = 'all', log_freq = 40)
+    #     wandb.watch(text_encoder_one, log = 'all', log_freq = 40)
+    #     wandb.watch(text_encoder_two, log = 'all', log_freq = 40)
 
     for epoch in range(first_epoch, num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             progress_bar.update(1)
             progress_bar.set_description(f"# PTI :step: {global_step}, epoch: {epoch}")
 
-            sts = batch["caption_output"]
-            vae_latent = batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution) * 0.13025
+            sts = process_stringlist(batch["caption_output"])
+            print(sts)
+            vae_latent = (
+                batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution)
+                * 0.13025
+            )
 
             # tokens to text embeds
             prompt_embeds_list = []
@@ -343,6 +357,8 @@ def main(
                     add_special_tokens=True,
                     return_tensors="pt",
                 ).input_ids
+
+                print(tok)
 
                 prompt_embeds_out = text_encoder(
                     tok.to(text_encoder.device),
@@ -394,51 +410,51 @@ def main(
                 added_cond_kwargs=added_kw,
             )[0]
 
-            loss = (model_pred - noise).pow(2)
-            loss = loss.mean()
-
+            loss = (model_pred - noise).pow(2).mean()
             fabric.backward(loss)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
 
-            wandb.log({"train_loss": loss.item()})
+            if (step + 1) % gradient_accumulation_steps == 0:
+
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+                wandb.log({"train_loss": loss.item()})
 
             # every step, we reset the embeddings to the original embeddings.
 
-            for idx, text_encoder in enumerate(text_encoders):
-                embedding_handler.retract_embeddings()
-
             if global_step % valid_steps == 10:
-                
 
                 if fabric.global_rank == 0:
                     if global_step % checkpoint_steps == 10 and global_step > 0:
                         os.makedirs(f"{output_dir}/{global_step}", exist_ok=True)
                         unet_path = f"{output_dir}/{global_step}/unet.pth"
-                        text_encoder_one_path = f"{output_dir}/{global_step}/text_encoder_one.pth"
-                        text_encoder_two_path = f"{output_dir}/{global_step}/text_encoder_two.pth"
+                        text_encoder_one_path = (
+                            f"{output_dir}/{global_step}/text_encoder_one.pth"
+                        )
+                        text_encoder_two_path = (
+                            f"{output_dir}/{global_step}/text_encoder_two.pth"
+                        )
 
                         # save all.
                         save_file(unet.state_dict(), unet_path)
                         save_file(text_encoder_one.state_dict(), text_encoder_one_path)
                         save_file(text_encoder_two.state_dict(), text_encoder_two_path)
 
-                        
                     from diffusers import StableDiffusionXLPipeline
 
                     pipe = StableDiffusionXLPipeline.from_pretrained(
                         pretrained_model_name_or_path,
                         unet=unet.module,
-                        text_encoder = text_encoder_one.module,
-                        text_encoder_2 = text_encoder_two.module,
-                        tokenizer = tok1,
-                        tokenizer_2 = tok2,
+                        text_encoder=text_encoder_one.module,
+                        text_encoder_2=text_encoder_two.module,
+                        tokenizer=tok1,
+                        tokenizer_2=tok2,
                         torch_dtype=weight_dtype,
                         use_safetensors=True,
                     ).to(fabric.device)
-                    generator = torch.Generator()
-                    generator.manual_seed(0)
+                    generator = torch.Generator().manual_seed(0)
+
                     images = pipe(
                         valid_prompts,
                         guidance_scale=5.0,
@@ -460,10 +476,14 @@ def main(
                     val_loss = 0.0
                     tot_n = 0.0
                     for step, batch in enumerate(val_dataloader):
-                        sts = batch["caption_output"]
-                       
+                        # sts = batch["caption_output"]
+                        sts = process_stringlist(batch["caption_output"])
+
                         vae_latent = (
-                            batch["vae_output"].reshape(-1, 4, latent_resolution, latent_resolution) * 0.13025
+                            batch["vae_output"].reshape(
+                                -1, 4, latent_resolution, latent_resolution
+                            )
+                            * 0.13025
                         )
 
                         # tokens to text embeds
