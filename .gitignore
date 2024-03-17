@@ -12,3 +12,7 @@ JourneyDB/
 __pycache__/
 wandb
 checkpoints/
+*2017
+preprocessed_coco
+*.zip
+*.json

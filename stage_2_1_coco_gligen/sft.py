@@ -71,8 +71,8 @@ def main(
     train_batch_size: int = 6,
     num_train_epochs: int = 600,
     max_train_steps: Optional[int] = None,
-    valid_steps: int = 200,  # default to no checkpoints
-    checkpoint_steps: int = 2000,
+    valid_steps: int = 300,  # default to no checkpoints
+    checkpoint_steps: int = 300,
     gradient_accumulation_steps: int = 32,  # todo
     unet_learning_rate: float = 2e-5,
     scale_lr: bool = False,
@@ -86,8 +86,8 @@ def main(
     mixed_precision: Optional[str] = "fp32",
     device: str = "cuda:0",
     verbose: bool = True,
-    remote_train_dir="/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_train",
-    remote_val_dir="/root/bigdisk/project_structured_prompt/stage_2_gligen_train/grit_mds_test/data",
+    remote_train_dir="./coco_mds_train/data",
+    remote_val_dir="./coco_mds_test/data",
 ) -> None:
 
     if allow_tf32:
@@ -211,11 +211,11 @@ def main(
         },
         {
             "params": text_encoder_other_params,
-            "lr": unet_learning_rate * 5,
+            "lr": unet_learning_rate * 2,
         },
         {
             "params": text_encoder_embedding_params,
-            "lr": 1e-4,
+            "lr": 2e-4,
             "weight_decay": 1e-3,
         },
     ]
@@ -312,10 +312,11 @@ def main(
     valid_prompts = [
         "epic <|98|><|269|><|303|><|545|>castle landscape",
         "<|109|><|1|><|607|><|712|>A man carries <|98|><|269|><|303|><|545|><|426|><|253|><|589|><|580|>chickens as authorities enforced total evacuation of residents living near Taal volcano in Agoncillo town, Batangas province, southern Philippines on Thursday Jan. 16, 2020. Taal volcano belched smaller plumes of ash Thursday but shuddered continuously with earthquakes and cracked roads in nearby towns, which were blockaded by police due to fears of a bigger eruption. (AP Photo/Aaron Favila",
-        "<|98|><|269|><|303|><|545|>A squirrel eating a burger",
-        "An <|98|><|269|><|303|><|545|>astronaut flying in space, 4k, high resolution.",
-        "An <|300|><|1|><|607|><|712|>astronaut flying in space, 4k, high resolution.",
-        "An <|300|><|1|><|607|><|400|>astronaut flying in space, 4k, high resolution.",
+        "<|547|><|247|><|45|><|112|> bottle <|0|><|304|><|283|><|416|> toilet <|397|><|281|><|563|><|383|> sink <|819|><|1|><|140|><|82|> person",
+        "An <|98|><|269|><|303|><|300|>astronaut flying in space, 4k, high resolution.",
+        "An <|400|><|269|><|303|><|300|>astronaut flying in space, 4k, high resolution.",
+        "<|528|><|3|><|135|><|725|> bicycle <|0|><|3|><|625|><|754|> person <|99|><|275|><|420|><|449|> cat",
+        "<|96|><|316|><|357|><|467|> giraffe <|51|><|22|><|618|><|745|> giraffe",
     ]
 
     def half_values(string):
