@@ -102,16 +102,27 @@ def preprocess_coco(coco_instance, img_dir, preprocess_path, plot_bbox=False, te
         #     break
         img_info = coco_instance.loadImgs(img_id)[0]
         # if img is too small, skip
-        if img_info['width'] < 500 or img_info['height'] < 500:
+        if img_info['width'] < 450 or img_info['height'] < 450:
             print("SKIP!!")
             continue
         annotations_ids = coco_instance.getAnnIds(imgIds=img_info['id'])
         annotations = coco_instance.loadAnns(annotations_ids)
         bboxes = []
         category_names = []
+        existing_cat = set()
         for annotation in annotations:
             category_name = coco_instance.loadCats(annotation['category_id'])[0]['name']
             bbox = annotation['bbox']
+            # if its width or height is out of range, then skip
+            if bbox[2] < 75 or bbox[3] < 75:
+                continue
+            # if the cate
+            if category_name in existing_cat:
+                continue
+
+            if len(existing_cat) > 4:
+                continue
+            existing_cat.add(category_name)
             bboxes.append(bbox)
             category_names.append(category_name)
             #print(f"Processing {img_info['file_name']} with {category_name} and bbox {bbox}")
@@ -125,9 +136,7 @@ def preprocess_coco(coco_instance, img_dir, preprocess_path, plot_bbox=False, te
         prompt = ''
         for category_name, bbox in zip(category_names, bboxes):
             bbox_as_str = ''.join(f"<|{round(coord)}|>" for coord in bbox)
-            # if the w, h is 0, then it is not valid.
-            if bbox[2] == 0 or bbox[3] == 0:
-                continue
+            
 
             prompt += f"{bbox_as_str} {category_name} "
             

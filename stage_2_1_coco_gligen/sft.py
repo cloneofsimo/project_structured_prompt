@@ -63,21 +63,21 @@ def main(
         str
     ] = "stabilityai/stable-diffusion-xl-base-1.0",
     revision: Optional[str] = None,
-    output_dir: str = "./checkpoints/patch_pool2",
+    output_dir: str = "./checkpoints/bs4_2e-6_16x",
     seed: Optional[int] = 42,
     resolution: int = 768,
     crops_coords_top_left_h: int = 0,
     crops_coords_top_left_w: int = 0,
-    train_batch_size: int = 6,
+    train_batch_size: int = 4,
     num_train_epochs: int = 600,
     max_train_steps: Optional[int] = None,
     valid_steps: int = 300,  # default to no checkpoints
-    checkpoint_steps: int = 300,
-    gradient_accumulation_steps: int = 32,  # todo
-    unet_learning_rate: float = 2e-5,
+    checkpoint_steps: int = 1200,
+    gradient_accumulation_steps: int = 16,  # todo
+    unet_learning_rate: float = 4e-6,
     scale_lr: bool = False,
-    lr_scheduler: str = "constant",
-    lr_warmup_steps: int = 500,
+    lr_scheduler: str = "linear",
+    lr_warmup_steps: int = 20,
     lr_num_cycles: int = 1,
     lr_power: float = 1.0,
     dataloader_num_workers: int = 0,
@@ -97,7 +97,10 @@ def main(
     print("Using seed", seed)
     torch.manual_seed(seed)
     latent_resolution = resolution // 8
-    inserting_list_tokens = [f"<|{idx}|>" for idx in range(1000)]
+    inserting_list_tokens = [f"<|sz_{idx}|>" for idx in range(768)] + [f"<|p_{idx}|>" for idx in range(768)]
+
+    te_param_rate = 4e-6
+    tee_param_rate =  1e-4
 
     if mixed_precision == "fp16":
         weight_dtype = torch.float16
@@ -132,6 +135,8 @@ def main(
                 "gradient_accumulation_steps": gradient_accumulation_steps,
                 "unet_learning_rate": unet_learning_rate,
                 "scale_lr": scale_lr,
+                "te_param_rate": te_param_rate,
+                "tee_param_rate": tee_param_rate,
                 "lr_scheduler": lr_scheduler,
                 "lr_warmup_steps": lr_warmup_steps,
                 "lr_num_cycles": lr_num_cycles,
@@ -145,11 +150,6 @@ def main(
                 "remote_train_dir": remote_train_dir,
                 "remote_val_dir": remote_val_dir,
             },
-        )
-
-    if scale_lr:
-        unet_learning_rate = (
-            unet_learning_rate * gradient_accumulation_steps * train_batch_size
         )
 
     (
@@ -171,7 +171,7 @@ def main(
     # Define patterns to identify parameters of interest in the UNet model
     WHITELIST_PATTERNS = [
         "*.attn*.weight",
-        "*.resnet*.weight",  # Added pattern to include ResNet layers
+       # "*.resnet*.weight",  # Added pattern to include ResNet layers
     ]
     BLACKLIST_PATTERNS = ["*time*"]
 
@@ -204,6 +204,8 @@ def main(
                 text_encoder_other_params.append(param)
 
     # Optimizer creation with different learning rates for different parameter groups
+
+
     params_to_optimize = [
         {
             "params": unet_param_to_optimize,
@@ -211,18 +213,17 @@ def main(
         },
         {
             "params": text_encoder_other_params,
-            "lr": unet_learning_rate * 2,
+            "lr": te_param_rate,
         },
         {
             "params": text_encoder_embedding_params,
-            "lr": 2e-4,
-            "weight_decay": 1e-3,
+            "lr":tee_param_rate,
         },
     ]
 
     optimizer = torch.optim.AdamW(
         params_to_optimize,
-        weight_decay=1e-3,
+        weight_decay=0.01
     )
 
     train_dataset = StreamingDataset(
@@ -275,7 +276,7 @@ def main(
     lr_scheduler = get_scheduler(
         lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=lr_warmup_steps * gradient_accumulation_steps,
+        num_warmup_steps=lr_warmup_steps,
         num_training_steps=max_train_steps * gradient_accumulation_steps,
         num_cycles=lr_num_cycles,
         power=lr_power,
@@ -319,14 +320,51 @@ def main(
         "<|96|><|316|><|357|><|467|> giraffe <|51|><|22|><|618|><|745|> giraffe",
     ]
 
-    def half_values(string):
-        # catch <|int|> and replace with <|int/2|>
-        catch = re.findall(r"<\|\d+\|>", string)
-        for c in catch:
-            val = int(c[2:-2])
-            string = string.replace(c, f"<|{val//16}|>")
+    # def half_values(string):
+    #     # # catch <|int|> and replace with <|int/2|>
+    #     # catch = re.findall(r"<\|\d+\|>", string)
+    #     # for i in range(0, len(catch), 4):
+    #     #     x, y = catch[i], catch[i + 1]
+    #     #     xval, yval = int(x[2:-2]), int(y[2:-2])
+    #     #     w, h = catch[i + 2], catch[i + 3]
+    #     #     wval, hval = int(w[2:-2]), int(h[2:-2])
 
-        return string
+    #     #     string = string.replace(x, f"<|{xval//2}|>")
+
+
+    #     for i, c in enumerate(catch):
+    #         val = int(c[2:-2])
+    #         if i%4 > 1:
+    #             string = string.replace(c, f"<|sz_{val//16}|>")
+    #         else:
+    #             string = string.replace(c, f"<|p_{val//16}|>")
+
+    #     return string
+
+    def half_values(input_str):
+        # Splitting the string into tokens based on "|"
+        tokens = input_str.split("|")
+        
+        # Keep track of numeric token positions to correctly apply "p_" or "sz_"
+        numeric_token_positions = [i for i, token in enumerate(tokens) if token.isdigit()]
+        
+        # Placeholder for the transformed tokens
+        transformed_tokens = []
+        
+        for i, token in enumerate(tokens):
+            if token.isdigit():  # Check if the token is a digit
+                number = int(token)  # Convert token to integer
+                # Determine position based on numeric tokens only
+                if numeric_token_positions.index(i) % 4 == 0 or numeric_token_positions.index(i) % 4 == 1:  # Positions for "p_"
+                    transformed_tokens.append(f"p_{number // 16}")
+                else:  # Positions for "sz_"
+                    transformed_tokens.append(f"sz_{number // 16}")
+            else:
+                transformed_tokens.append(token)  # Non-digit tokens are added as is
+        
+        # Joining the transformed tokens back together with "|" as the separator
+        result = "|".join(transformed_tokens)
+        return result
 
     process_stringlist = lambda x: [half_values(i) for i in x]
 
@@ -368,7 +406,7 @@ def main(
                     output_hidden_states=True,
                 )
 
-                pooled_prompt_embeds = prompt_embeds_out[0]
+                pooled_prompt_embeds = prompt_embeds_out[0] * 0.0
                 prompt_embeds = prompt_embeds_out.hidden_states[-2]
                 bs_embed, seq_len, _ = prompt_embeds.shape
                 prompt_embeds = prompt_embeds.view(bs_embed, seq_len, -1)
@@ -424,55 +462,55 @@ def main(
 
                 wandb.log({"train_loss": loss.item()})
 
-            # every step, we reset the embeddings to the original embeddings.
-
             if global_step % valid_steps == 10:
+                with torch.no_grad():
+                    if fabric.global_rank == 0:
+                        if global_step % checkpoint_steps == 10 and global_step > 0:
+                            os.makedirs(f"{output_dir}/{global_step}", exist_ok=True)
+                            unet_path = f"{output_dir}/{global_step}/unet.pth"
+                            text_encoder_one_path = (
+                                f"{output_dir}/{global_step}/text_encoder_one.pth"
+                            )
+                            text_encoder_two_path = (
+                                f"{output_dir}/{global_step}/text_encoder_two.pth"
+                            )
 
-                if fabric.global_rank == 0:
-                    if global_step % checkpoint_steps == 10 and global_step > 0:
-                        os.makedirs(f"{output_dir}/{global_step}", exist_ok=True)
-                        unet_path = f"{output_dir}/{global_step}/unet.pth"
-                        text_encoder_one_path = (
-                            f"{output_dir}/{global_step}/text_encoder_one.pth"
-                        )
-                        text_encoder_two_path = (
-                            f"{output_dir}/{global_step}/text_encoder_two.pth"
-                        )
+                            # save all.
+                            save_file(unet.state_dict(), unet_path)
+                            save_file(text_encoder_one.state_dict(), text_encoder_one_path)
+                            save_file(text_encoder_two.state_dict(), text_encoder_two_path)
 
-                        # save all.
-                        save_file(unet.state_dict(), unet_path)
-                        save_file(text_encoder_one.state_dict(), text_encoder_one_path)
-                        save_file(text_encoder_two.state_dict(), text_encoder_two_path)
+                        from diffusers import StableDiffusionXLPipeline
 
-                    from diffusers import StableDiffusionXLPipeline
+                        pipe = StableDiffusionXLPipeline.from_pretrained(
+                            pretrained_model_name_or_path,
+                            unet=unet.module,
+                            text_encoder=text_encoder_one.module,
+                            text_encoder_2=text_encoder_two.module,
+                            tokenizer=tok1,
+                            tokenizer_2=tok2,
+                            torch_dtype=weight_dtype,
+                            use_safetensors=True,
+                        ).to(fabric.device)
+                        generator = torch.Generator().manual_seed(0)
 
-                    pipe = StableDiffusionXLPipeline.from_pretrained(
-                        pretrained_model_name_or_path,
-                        unet=unet.module,
-                        text_encoder=text_encoder_one.module,
-                        text_encoder_2=text_encoder_two.module,
-                        tokenizer=tok1,
-                        tokenizer_2=tok2,
-                        torch_dtype=weight_dtype,
-                        use_safetensors=True,
-                    ).to(fabric.device)
-                    generator = torch.Generator().manual_seed(0)
+                        images = pipe(
+                            valid_prompts,
+                            guidance_scale=8.0,
+                            generator = [torch.Generator(device="cuda").manual_seed(0) for i in range(len(valid_prompts))],
+                            width=resolution,
+                            height=resolution,
+                        ).images
+                        log_images = []
+                        for img, promp in zip(images, valid_prompts):
+                            _img = wandb.Image(img, caption=promp)
+                            log_images.append(_img)
 
-                    images = pipe(
-                        valid_prompts,
-                        guidance_scale=8.0,
-                        generator = [torch.Generator(device="cuda").manual_seed(0) for i in range(len(valid_prompts))],
-                        width=resolution,
-                        height=resolution,
-                    ).images
-                    log_images = []
-                    for img, promp in zip(images, valid_prompts):
-                        _img = wandb.Image(img, caption=promp)
-                        log_images.append(_img)
+                        wandb.log({"images": log_images})
 
-                    wandb.log({"images": log_images})
-
-                    del pipe
+                        del pipe
+                        # empty cache
+                        torch.cuda.empty_cache()
 
                 # Validation Loss
                 with torch.no_grad():
